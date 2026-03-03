@@ -117,13 +117,17 @@ LABEL org.opencontainers.image.source="https://github.com/openclaw/openclaw" \
 
 WORKDIR /app
 
-# Install system utilities present in bookworm but missing in bookworm-slim.
-# On the full bookworm image these are already installed (apt-get is a no-op).
+# Install system utilities + core skill dependencies
 RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      procps hostname curl git openssl
+      procps hostname curl git openssl \
+      sudo jq ripgrep tmux ffmpeg golang-go build-essential ca-certificates gnupg
+
+# Passwordless sudo for the node user
+RUN echo 'node ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/node && \
+    chmod 0440 /etc/sudoers.d/node
 
 RUN chown node:node /app
 
@@ -136,8 +140,6 @@ COPY --from=runtime-assets --chown=node:node /app/skills ./skills
 COPY --from=runtime-assets --chown=node:node /app/docs ./docs
 
 # Keep pnpm available in the runtime image for container-local workflows.
-# Use a shared Corepack home so the non-root `node` user does not need a
-# first-run network fetch when invoking pnpm.
 ENV COREPACK_HOME=/usr/local/share/corepack
 RUN install -d -m 0755 "$COREPACK_HOME" && \
     corepack enable && \
@@ -157,7 +159,6 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
 # Optionally install Chromium and Xvfb for browser automation.
 # Build with: docker build --build-arg OPENCLAW_INSTALL_BROWSER=1 ...
 # Adds ~300MB but eliminates the 60-90s Playwright install on every container start.
-# Must run after node_modules COPY so playwright-core is available.
 ARG OPENCLAW_INSTALL_BROWSER=""
 RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
@@ -172,8 +173,6 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
 
 # Optionally install Docker CLI for sandbox container management.
 # Build with: docker build --build-arg OPENCLAW_INSTALL_DOCKER_CLI=1 ...
-# Adds ~50MB. Only the CLI is installed — no Docker daemon.
-# Required for agents.defaults.sandbox to function in Docker deployments.
 ARG OPENCLAW_INSTALL_DOCKER_CLI=""
 ARG OPENCLAW_DOCKER_GPG_FINGERPRINT="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
 RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
@@ -183,8 +182,6 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
       DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg && \
       install -m 0755 -d /etc/apt/keyrings && \
-      # Verify Docker apt signing key fingerprint before trusting it as a root key.
-      # Update OPENCLAW_DOCKER_GPG_FINGERPRINT when Docker rotates release keys.
       curl -fsSL https://download.docker.com/linux/debian/gpg -o /tmp/docker.gpg.asc && \
       expected_fingerprint="$(printf '%s' "$OPENCLAW_DOCKER_GPG_FINGERPRINT" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')" && \
       actual_fingerprint="$(gpg --batch --show-keys --with-colons /tmp/docker.gpg.asc | awk -F: '$1 == "fpr" { print toupper($10); exit }')" && \
@@ -208,23 +205,61 @@ RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
 
 ENV NODE_ENV=production
 
+# Optionally install Homebrew (on by default).
+# Build with: docker build --build-arg OPENCLAW_INSTALL_BREW=0 ... to skip.
+ARG OPENCLAW_INSTALL_BREW="1"
+RUN if [ "$OPENCLAW_INSTALL_BREW" = "1" ]; then \
+      if ! id -u linuxbrew >/dev/null 2>&1; then useradd -m -s /bin/bash linuxbrew; fi; \
+      mkdir -p /home/linuxbrew/.linuxbrew; \
+      chown -R linuxbrew:linuxbrew /home/linuxbrew; \
+      su - linuxbrew -c "NONINTERACTIVE=1 CI=1 /bin/bash -c '$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)'"; \
+      if [ ! -e /home/linuxbrew/.linuxbrew/Library ]; then \
+        ln -s /home/linuxbrew/.linuxbrew/Homebrew/Library /home/linuxbrew/.linuxbrew/Library; \
+      fi; \
+      if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then echo "brew install failed"; exit 1; fi; \
+      ln -sf /home/linuxbrew/.linuxbrew/bin/brew /usr/local/bin/brew; \
+      chown -R node:node /home/linuxbrew/.linuxbrew; \
+    fi
+ENV HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew
+ENV HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar
+ENV HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew
+ENV GOPATH=/home/node/go
+ENV PATH=/home/node/.npm-global/bin:/home/node/.local/bin:/home/node/go/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}
+
+# Global npm tools
+RUN npm install -g @bitwarden/cli caldav-cli @withgraphite/graphite-cli trash-cli
+
+# yt-dlp via brew
+RUN su -c '/home/linuxbrew/.linuxbrew/bin/brew install yt-dlp' node
+
+# Pre-install all skill dependencies (brew formulas, go modules, node/uv packages).
+# Build with: docker build --build-arg OPENCLAW_INSTALL_SKILL_DEPS=0 ... to skip.
+# Build with: docker build --build-arg OPENCLAW_SKIP_ML_DEPS=1 ... to skip heavy AI/ML packages.
+ARG OPENCLAW_INSTALL_SKILL_DEPS="1"
+ARG OPENCLAW_SKIP_ML_DEPS="0"
+RUN if [ "$OPENCLAW_INSTALL_SKILL_DEPS" = "1" ]; then \
+      OPENCLAW_SKIP_ML_DEPS=$OPENCLAW_SKIP_ML_DEPS node scripts/install-skills-deps.mjs; \
+      if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then \
+        /home/linuxbrew/.linuxbrew/bin/brew cleanup --prune=all -s; \
+        rm -rf /home/linuxbrew/.linuxbrew/Library/Homebrew/vendor/bundle/ruby; \
+        rm -rf /home/linuxbrew/.linuxbrew/Library/Taps/homebrew/homebrew-*/.*; \
+        rm -rf /home/linuxbrew/.linuxbrew/var/homebrew/locks; \
+        rm -rf /home/linuxbrew/.linuxbrew/Caskroom; \
+        find /home/linuxbrew/.linuxbrew/Cellar -name 'doc' -type d -exec rm -rf {} + 2>/dev/null || true; \
+        find /home/linuxbrew/.linuxbrew/Cellar -name 'man' -type d -exec rm -rf {} + 2>/dev/null || true; \
+        find /home/linuxbrew/.linuxbrew/Cellar -name 'info' -type d -exec rm -rf {} + 2>/dev/null || true; \
+      fi; \
+      npm cache clean --force 2>/dev/null || true; \
+      rm -rf /home/node/.cache /home/node/.npm; \
+      sudo find /tmp -mindepth 1 -delete 2>/dev/null || true; \
+      sudo find /var/tmp -mindepth 1 -delete 2>/dev/null || true; \
+    fi
+
 # Security hardening: Run as non-root user
-# The node:22-bookworm image includes a 'node' user (uid 1000)
-# This reduces the attack surface by preventing container escape via root privileges
 USER node
 
 # Start gateway server with default config.
 # Binds to loopback (127.0.0.1) by default for security.
-#
-# IMPORTANT: With Docker bridge networking (-p 18789:18789), loopback bind
-# makes the gateway unreachable from the host. Either:
-#   - Use --network host, OR
-#   - Override --bind to "lan" (0.0.0.0) and set auth credentials
-#
-# Built-in probe endpoints for container health checks:
-#   - GET /healthz (liveness) and GET /readyz (readiness)
-#   - aliases: /health and /ready
-# For external access from host/ingress, override bind to "lan" and set auth.
 HEALTHCHECK --interval=3m --timeout=10s --start-period=15s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "openclaw.mjs", "gateway", "--allow-unconfigured"]
