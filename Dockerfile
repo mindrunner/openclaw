@@ -130,7 +130,7 @@ RUN if [ -n "$OPENCLAW_INSTALL_POSTGRESQL" ]; then \
 # Adds ~100MB. Wasp 0.21+ is distributed via npm.
 ARG OPENCLAW_INSTALL_WASP=""
 RUN if [ -n "$OPENCLAW_INSTALL_WASP" ]; then \
-      npm install -g @wasp.sh/wasp-cli && \
+      npm install -g wasp-lang && \
       wasp version; \
     fi
 
