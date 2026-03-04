@@ -3,7 +3,10 @@ name: Docker Build (fork → Docker Hub)
 on:
   push:
     branches:
-      - feature/docker-setup
+      - main
+  schedule:
+    # Nightly at 03:00 UTC — sync upstream + rebuild
+    - cron: '0 3 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -11,14 +14,51 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  sync-upstream:
+    name: Sync upstream/main → fork/main
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.push.outputs.sha }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/openclaw/openclaw.git
+
+      - name: Fetch upstream
+        run: git fetch upstream main
+
+      - name: Rebase fork commits onto upstream/main
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          # Rebase our commits on top of upstream/main (fast-forward if no own commits)
+          git rebase upstream/main || {
+            echo "Rebase failed — possible conflict. Aborting."
+            git rebase --abort
+            exit 1
+          }
+
+      - name: Push rebased main to fork
+        id: push
+        run: |
+          git push origin main --force-with-lease
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
   build-and-push:
     name: Build & push to Docker Hub
     runs-on: ubuntu-latest
+    needs: sync-upstream
     steps:
-      - name: Checkout
+      - name: Checkout (post-sync)
         uses: actions/checkout@v4
         with:
-          ref: feature/docker-setup
+          ref: main
 
       - name: Set up QEMU (for multi-arch)
         uses: docker/setup-qemu-action@v3
