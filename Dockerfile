@@ -89,6 +89,29 @@ RUN if [ -n "$OPENCLAW_INSTALL_DOCKER_CLI" ]; then \
       rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
     fi
 
+# Optionally install PostgreSQL for local QA/dev database needs.
+# Build with: docker build --build-arg OPENCLAW_INSTALL_POSTGRESQL=1 ...
+# Adds ~200MB. Requires running the container with an entrypoint that starts the service.
+# Use scripts/docker-entrypoint.sh (included when this arg is set) as ENTRYPOINT.
+ARG OPENCLAW_INSTALL_POSTGRESQL=""
+RUN if [ -n "$OPENCLAW_INSTALL_POSTGRESQL" ]; then \
+      apt-get update && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        postgresql \
+        postgresql-client && \
+      apt-get clean && \
+      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
+    fi
+
+# Optionally install Wasp CLI for local Wasp app development and QA.
+# Build with: docker build --build-arg OPENCLAW_INSTALL_WASP=1 ...
+# Adds ~100MB. Wasp 0.21+ is distributed via npm.
+ARG OPENCLAW_INSTALL_WASP=""
+RUN if [ -n "$OPENCLAW_INSTALL_WASP" ]; then \
+      npm install -g wasp-lang && \
+      wasp version; \
+    fi
+
 USER node
 COPY --chown=node:node . .
 # Normalize copied plugin/agent paths so plugin safety checks do not reject
@@ -108,6 +131,9 @@ RUN pnpm ui:build
 USER root
 RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
  && chmod 755 /app/openclaw.mjs
+
+COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV NODE_ENV=production
 
@@ -130,4 +156,6 @@ USER node
 # For external access from host/ingress, override bind to "lan" and set auth.
 HEALTHCHECK --interval=3m --timeout=10s --start-period=15s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "openclaw.mjs", "gateway", "--allow-unconfigured"]
