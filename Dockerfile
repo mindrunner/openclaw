@@ -111,22 +111,7 @@ RUN if [ -n "$OPENCLAW_INSTALL_DOCKER_CLI" ]; then \
       rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
     fi
 
-# Optionally install PostgreSQL for local QA/dev database needs.
-# Build with: docker build --build-arg OPENCLAW_INSTALL_POSTGRESQL=1 ...
-# Adds ~200MB. Requires running the container with an entrypoint that starts the service.
-# Use scripts/docker-entrypoint.sh (included when this arg is set) as ENTRYPOINT.
-ARG OPENCLAW_INSTALL_POSTGRESQL=""
-RUN if [ -n "$OPENCLAW_INSTALL_POSTGRESQL" ]; then \
-      apt-get update && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        postgresql \
-        postgresql-client && \
-      apt-get clean && \
-      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
-    fi
-
-# Optionally install Wasp CLI for local Wasp app development and QA.
-# Build with: docker build --build-arg OPENCLAW_INSTALL_WASP=1 ...
+# Optionally install Wasp CLI=1 ...
 # Adds ~100MB. Wasp 0.21+ is distributed via npm.
 ARG OPENCLAW_INSTALL_WASP=""
 RUN if [ -n "$OPENCLAW_INSTALL_WASP" ]; then \

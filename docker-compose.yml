@@ -1,7 +1,25 @@
 volumes:
   openclaw-brew:
+  openclaw-pgdata:
 
 services:
+  openclaw-postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${OPENCLAW_PG_DB:-openclaw_qa}
+      POSTGRES_USER: ${OPENCLAW_PG_USER:-openclaw}
+      POSTGRES_PASSWORD: ${OPENCLAW_PG_PASS:-openclaw}
+    volumes:
+      - openclaw-pgdata:/var/lib/postgresql/data
+    network_mode: "host"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${OPENCLAW_PG_USER:-openclaw}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE:-openclaw:local}
     environment:
@@ -12,6 +30,9 @@ services:
       CLAUDE_AI_SESSION_KEY: ${CLAUDE_AI_SESSION_KEY:-}
       CLAUDE_WEB_SESSION_KEY: ${CLAUDE_WEB_SESSION_KEY:-}
       CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE:-}
+      OPENCLAW_PG_DB: ${OPENCLAW_PG_DB:-openclaw_qa}
+      OPENCLAW_PG_USER: ${OPENCLAW_PG_USER:-openclaw}
+      OPENCLAW_PG_PASS: ${OPENCLAW_PG_PASS:-openclaw}
     volumes:
       - openclaw-brew:/home/linuxbrew/.linuxbrew
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
@@ -27,6 +48,9 @@ services:
     network_mode: "host"
     init: true
     restart: unless-stopped
+    depends_on:
+      openclaw-postgres:
+        condition: service_healthy
     command:
       [
         "node",
@@ -67,6 +91,9 @@ services:
       CLAUDE_AI_SESSION_KEY: ${CLAUDE_AI_SESSION_KEY:-}
       CLAUDE_WEB_SESSION_KEY: ${CLAUDE_WEB_SESSION_KEY:-}
       CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE:-}
+      OPENCLAW_PG_DB: ${OPENCLAW_PG_DB:-openclaw_qa}
+      OPENCLAW_PG_USER: ${OPENCLAW_PG_USER:-openclaw}
+      OPENCLAW_PG_PASS: ${OPENCLAW_PG_PASS:-openclaw}
     volumes:
       - openclaw-brew:/home/linuxbrew/.linuxbrew
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
