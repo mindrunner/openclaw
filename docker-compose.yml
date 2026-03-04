@@ -2,6 +2,10 @@ volumes:
   openclaw-brew:
   openclaw-pgdata:
 
+networks:
+  openclaw-net:
+    driver: bridge
+
 services:
   openclaw-postgres:
     image: postgres:15-alpine
@@ -11,7 +15,8 @@ services:
       POSTGRES_PASSWORD: ${OPENCLAW_PG_PASS:-openclaw}
     volumes:
       - openclaw-pgdata:/var/lib/postgresql/data
-    network_mode: "host"
+    networks:
+      - openclaw-net
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${OPENCLAW_PG_USER:-openclaw}"]
@@ -37,15 +42,14 @@ services:
       - openclaw-brew:/home/linuxbrew/.linuxbrew
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
-      ## Uncomment the lines below to enable sandbox isolation
-      ## (agents.defaults.sandbox). Requires Docker CLI in the image
-      ## (build with --build-arg OPENCLAW_INSTALL_DOCKER_CLI=1) or use
-      ## docker-setup.sh with OPENCLAW_SANDBOX=1 for automated setup.
-      ## Set DOCKER_GID to the host's docker group GID (run: stat -c '%g' /var/run/docker.sock).
       # - /var/run/docker.sock:/var/run/docker.sock
     # group_add:
     #   - "${DOCKER_GID:-999}"
-    network_mode: "host"
+    networks:
+      - openclaw-net
+    ports:
+      - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
+      - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
     init: true
     restart: unless-stopped
     depends_on:
@@ -76,7 +80,8 @@ services:
 
   openclaw-cli:
     image: ${OPENCLAW_IMAGE:-openclaw:local}
-    network_mode: "host"
+    networks:
+      - openclaw-net
     cap_drop:
       - NET_RAW
       - NET_ADMIN
