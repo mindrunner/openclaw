@@ -155,7 +155,7 @@ LABEL org.opencontainers.image.source="https://github.com/openclaw/openclaw" \
 
 WORKDIR /app
 
-# Install runtime system utilities missing from bookworm-slim.
+# Install runtime system utilities missing from bookworm-slim plus core skill deps.
 # `ca-certificates` ships in `bookworm` (full) but not in `bookworm-slim`,
 # so it must be installed explicitly here. Without it `/etc/ssl/certs/`
 # stays empty and every HTTPS outbound dies at TLS handshake with
@@ -164,8 +164,13 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates curl git hostname lsof openssl procps python3 tini && \
+      ca-certificates curl git hostname lsof openssl procps python3 tini \
+      sudo jq ripgrep tmux ffmpeg golang-go build-essential gnupg && \
     update-ca-certificates
+
+# Passwordless sudo for the node user
+RUN echo 'node ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/node && \
+    chmod 0440 /etc/sudoers.d/node
 
 RUN chown node:node /app
 
@@ -275,6 +280,56 @@ RUN install -d -m 0700 -o node -g node /home/node/.openclaw && \
     stat -c '%U:%G %a' /home/node/.openclaw | grep -qx 'node:node 700'
 
 ENV NODE_ENV=production
+
+# Optionally install Homebrew (on by default).
+# Build with: docker build --build-arg OPENCLAW_INSTALL_BREW=0 ... to skip.
+ARG OPENCLAW_INSTALL_BREW="1"
+RUN if [ "$OPENCLAW_INSTALL_BREW" = "1" ]; then \
+      if ! id -u linuxbrew >/dev/null 2>&1; then useradd -m -s /bin/bash linuxbrew; fi; \
+      mkdir -p /home/linuxbrew/.linuxbrew; \
+      chown -R linuxbrew:linuxbrew /home/linuxbrew; \
+      su - linuxbrew -c "NONINTERACTIVE=1 CI=1 /bin/bash -c '$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)'"; \
+      if [ ! -e /home/linuxbrew/.linuxbrew/Library ]; then \
+        ln -s /home/linuxbrew/.linuxbrew/Homebrew/Library /home/linuxbrew/.linuxbrew/Library; \
+      fi; \
+      if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then echo "brew install failed"; exit 1; fi; \
+      ln -sf /home/linuxbrew/.linuxbrew/bin/brew /usr/local/bin/brew; \
+      chown -R node:node /home/linuxbrew/.linuxbrew; \
+    fi
+ENV HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew
+ENV HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar
+ENV HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew
+ENV GOPATH=/home/node/go
+ENV PATH=/home/node/.npm-global/bin:/home/node/.local/bin:/home/node/go/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}
+
+# Global npm tools
+RUN npm install -g @bitwarden/cli caldav-cli @withgraphite/graphite-cli trash-cli
+
+# yt-dlp via brew
+RUN su -c '/home/linuxbrew/.linuxbrew/bin/brew install yt-dlp' node
+
+# Pre-install all skill dependencies (brew formulas, go modules, node/uv packages).
+# Build with: docker build --build-arg OPENCLAW_INSTALL_SKILL_DEPS=0 ... to skip.
+# Build with: docker build --build-arg OPENCLAW_SKIP_ML_DEPS=1 ... to skip heavy AI/ML packages.
+ARG OPENCLAW_INSTALL_SKILL_DEPS="1"
+ARG OPENCLAW_SKIP_ML_DEPS="0"
+RUN if [ "$OPENCLAW_INSTALL_SKILL_DEPS" = "1" ]; then \
+      OPENCLAW_SKIP_ML_DEPS=$OPENCLAW_SKIP_ML_DEPS node scripts/install-skills-deps.mjs; \
+      if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then \
+        /home/linuxbrew/.linuxbrew/bin/brew cleanup --prune=all -s; \
+        rm -rf /home/linuxbrew/.linuxbrew/Library/Homebrew/vendor/bundle/ruby; \
+        rm -rf /home/linuxbrew/.linuxbrew/Library/Taps/homebrew/homebrew-*/.*; \
+        rm -rf /home/linuxbrew/.linuxbrew/var/homebrew/locks; \
+        rm -rf /home/linuxbrew/.linuxbrew/Caskroom; \
+        find /home/linuxbrew/.linuxbrew/Cellar -name 'doc' -type d -exec rm -rf {} + 2>/dev/null || true; \
+        find /home/linuxbrew/.linuxbrew/Cellar -name 'man' -type d -exec rm -rf {} + 2>/dev/null || true; \
+        find /home/linuxbrew/.linuxbrew/Cellar -name 'info' -type d -exec rm -rf {} + 2>/dev/null || true; \
+      fi; \
+      npm cache clean --force 2>/dev/null || true; \
+      rm -rf /home/node/.cache /home/node/.npm; \
+      sudo find /tmp -mindepth 1 -delete 2>/dev/null || true; \
+      sudo find /var/tmp -mindepth 1 -delete 2>/dev/null || true; \
+    fi
 
 # Security hardening: Run as non-root user
 # The node:24-bookworm image includes a 'node' user (uid 1000)
