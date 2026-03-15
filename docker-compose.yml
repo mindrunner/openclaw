@@ -1,3 +1,6 @@
+volumes:
+  openclaw-brew:
+
 services:
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE:-openclaw:local}
@@ -11,6 +14,7 @@ services:
       CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE:-}
       TZ: ${OPENCLAW_TZ:-UTC}
     volumes:
+      - openclaw-brew:/home/linuxbrew/.linuxbrew
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
       ## Uncomment the lines below to enable sandbox isolation
@@ -21,9 +25,7 @@ services:
       # - /var/run/docker.sock:/var/run/docker.sock
     # group_add:
     #   - "${DOCKER_GID:-999}"
-    ports:
-      - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
-      - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
+    network_mode: "host"
     init: true
     restart: unless-stopped
     command:
@@ -51,7 +53,7 @@ services:
 
   openclaw-cli:
     image: ${OPENCLAW_IMAGE:-openclaw:local}
-    network_mode: "service:openclaw-gateway"
+    network_mode: "host"
     cap_drop:
       - NET_RAW
       - NET_ADMIN
@@ -68,11 +70,12 @@ services:
       CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE:-}
       TZ: ${OPENCLAW_TZ:-UTC}
     volumes:
+      - openclaw-brew:/home/linuxbrew/.linuxbrew
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
     stdin_open: true
     tty: true
     init: true
-    entrypoint: ["node", "dist/index.js"]
+    entrypoint: ["scripts/docker-entrypoint.sh", "node", "dist/index.js"]
     depends_on:
       - openclaw-gateway
