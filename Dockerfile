@@ -142,6 +142,18 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       procps hostname curl git lsof openssl
 
+# Core skill dependencies (sudo, jq, ripgrep, tmux, ffmpeg, go, procps, build-essential)
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      sudo jq ripgrep tmux ffmpeg golang-go procps build-essential \
+      ca-certificates curl gnupg && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /tmp/* /var/tmp/*
+
+# Passwordless sudo for the node user
+RUN echo 'node ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/node && \
+    chmod 0440 /etc/sudoers.d/node
+
 RUN chown node:node /app
 
 COPY --from=runtime-assets --chown=node:node /app/dist ./dist
@@ -237,10 +249,67 @@ RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
 
 ENV NODE_ENV=production
 
+# Optionally install Homebrew (on by default).
+# Build with: docker build --build-arg OPENCLAW_INSTALL_BREW=0 ... to skip.
+USER root
+ARG OPENCLAW_INSTALL_BREW="1"
+RUN if [ "$OPENCLAW_INSTALL_BREW" = "1" ]; then \
+      if ! id -u linuxbrew >/dev/null 2>&1; then useradd -m -s /bin/bash linuxbrew; fi; \
+      mkdir -p /home/linuxbrew/.linuxbrew; \
+      chown -R linuxbrew:linuxbrew /home/linuxbrew; \
+      su - linuxbrew -c "NONINTERACTIVE=1 CI=1 /bin/bash -c '$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)'"; \
+      if [ ! -e /home/linuxbrew/.linuxbrew/Library ]; then \
+        ln -s /home/linuxbrew/.linuxbrew/Homebrew/Library /home/linuxbrew/.linuxbrew/Library; \
+      fi; \
+      if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then echo "brew install failed"; exit 1; fi; \
+      ln -sf /home/linuxbrew/.linuxbrew/bin/brew /usr/local/bin/brew; \
+      chown -R node:node /home/linuxbrew/.linuxbrew; \
+    fi
+ENV HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew
+ENV HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar
+ENV HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew
+ENV GOPATH=/home/node/go
+ENV PATH=/home/node/.npm-global/bin:/home/node/.local/bin:/home/node/go/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}
+
+# Global npm tools (installed to /home/node/.npm-global for node user access)
+RUN npm install -g @bitwarden/cli caldav-cli @withgraphite/graphite-cli trash-cli
+
+# yt-dlp via brew (must run as non-root)
+RUN su -c '/home/linuxbrew/.linuxbrew/bin/brew install yt-dlp' node
+
 # Security hardening: Run as non-root user
 # The node:24-bookworm image includes a 'node' user (uid 1000)
 # This reduces the attack surface by preventing container escape via root privileges
 USER node
+
+# Pre-install all skill dependencies (brew formulas, go modules, node/uv packages).
+# Reads skills/*/SKILL.md metadata. Individual failures are non-fatal.
+# Build with: docker build --build-arg OPENCLAW_INSTALL_SKILL_DEPS=0 ... to skip.
+# Build with: docker build --build-arg OPENCLAW_SKIP_ML_DEPS=1 ... to skip heavy AI/ML packages (saves ~3GB).
+ARG OPENCLAW_INSTALL_SKILL_DEPS="1"
+ARG OPENCLAW_SKIP_ML_DEPS="0"
+COPY --chown=node:node scripts/install-skills-deps.mjs ./scripts/install-skills-deps.mjs
+RUN if [ "$OPENCLAW_INSTALL_SKILL_DEPS" = "1" ]; then \
+      OPENCLAW_SKIP_ML_DEPS=$OPENCLAW_SKIP_ML_DEPS node scripts/install-skills-deps.mjs; \
+      if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then \
+        /home/linuxbrew/.linuxbrew/bin/brew cleanup --prune=all -s; \
+        rm -rf /home/linuxbrew/.linuxbrew/Library/Homebrew/vendor/bundle/ruby; \
+        rm -rf /home/linuxbrew/.linuxbrew/Library/Taps/homebrew/homebrew-*/.*; \
+        rm -rf /home/linuxbrew/.linuxbrew/var/homebrew/locks; \
+        rm -rf /home/linuxbrew/.linuxbrew/Caskroom; \
+        find /home/linuxbrew/.linuxbrew/Cellar -name 'doc' -type d -exec rm -rf {} + 2>/dev/null || true; \
+        find /home/linuxbrew/.linuxbrew/Cellar -name 'man' -type d -exec rm -rf {} + 2>/dev/null || true; \
+        find /home/linuxbrew/.linuxbrew/Cellar -name 'info' -type d -exec rm -rf {} + 2>/dev/null || true; \
+      fi; \
+      npm cache clean --force 2>/dev/null || true; \
+      rm -rf /home/node/.cache /home/node/.npm; \
+      sudo find /tmp -mindepth 1 -delete 2>/dev/null || true; \
+      sudo find /var/tmp -mindepth 1 -delete 2>/dev/null || true; \
+    fi
+
+# Fix brew volume ownership at startup (handles stale named volumes).
+COPY --chown=node:node scripts/docker-entrypoint.sh ./scripts/docker-entrypoint.sh
+ENTRYPOINT ["scripts/docker-entrypoint.sh"]
 
 # Start gateway server with default config.
 # Binds to loopback (127.0.0.1) by default for security.
