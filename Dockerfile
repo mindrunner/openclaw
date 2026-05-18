@@ -306,7 +306,14 @@ ENV PATH=/home/node/.npm-global/bin:/home/node/.local/bin:/home/node/go/bin:/hom
 RUN npm install -g @bitwarden/cli caldav-cli @withgraphite/graphite-cli trash-cli
 
 # yt-dlp via brew
-RUN su -c '/home/linuxbrew/.linuxbrew/bin/brew install yt-dlp' node
+# Earlier upstream RUNs (e.g. the Playwright `mkdir -p $PLAYWRIGHT_BROWSERS_PATH`
+# when OPENCLAW_INSTALL_BROWSER=1) can leave `/home/node/.cache` root-owned, so
+# brew (which resolves $HOME from the passwd entry) hits "Permission denied" when
+# it tries to mkdir `/home/node/.cache/Homebrew`. Re-establish node ownership on
+# `/home/node` and pre-create the brew cache before invoking brew as node.
+RUN chown -R node:node /home/node && \
+    install -d -m 0755 -o node -g node /home/node/.cache /home/node/.cache/Homebrew && \
+    su - node -c '/home/linuxbrew/.linuxbrew/bin/brew install yt-dlp'
 
 # Pre-install all skill dependencies (brew formulas, go modules, node/uv packages).
 # Build with: docker build --build-arg OPENCLAW_INSTALL_SKILL_DEPS=0 ... to skip.
