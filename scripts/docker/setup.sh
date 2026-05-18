@@ -2,6 +2,17 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# Source existing .env so persisted settings (e.g. OPENCLAW_DOCKER_APT_PACKAGES,
+# OPENCLAW_EXTRA_MOUNTS, OPENCLAW_HOME_VOLUME, OPENCLAW_TZ, OPENCLAW_SANDBOX)
+# carry over across re-runs of this setup script.
+if [[ -f "$ROOT_DIR/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$ROOT_DIR/.env"
+  set +a
+fi
+
 source "$ROOT_DIR/scripts/lib/docker-build.sh"
 COMPOSE_FILE="$ROOT_DIR/docker-compose.yml"
 EXTRA_COMPOSE_FILE="$ROOT_DIR/docker-compose.extra.yml"
